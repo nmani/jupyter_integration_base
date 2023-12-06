@@ -1,0 +1,66 @@
+name: Bug Report
+description: Report suspected incorrect behavior
+title: "BUG: "
+labels: [Bug]
+
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Sanity Checks
+      options:
+        - label: >
+            I have checked that this issue has not already been reported.
+          required: true
+        - label: >
+            I have confirmed the issue is specific to this package/integration/addon.
+          required: true
+        - label: >
+            I have confirmed this bug is present in latest [master repo](https://github.com/JohnOmernik/jupyter_integration_base) code.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Issue Description
+      description: >
+        Please provide a general description of the issue. Exclude all non-public information.
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Sample Code and/or Error Message
+      description: >
+        Please provide a minimal code example to help reproduce this issue and/or the relevant errors messages. 
+        Take care to exclude all non-public information, mask sensitive values, and provide dummy data if possible.
+      placeholder: >
+        %helloworld
+        ...
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior
+      description: >
+        Please describe the expected behavior or general intent of your code.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: >
+        Python Environment
+      description: >
+        In your specific virtualenv/container, copy and paste of the output of following command:
+        "python --version && pip list".
+      value: >
+        Python 3.X.X
+        Package                                 Version
+        --------------------------------------- ---------------
+        package1                                X.X.X
+        package2                                X.X.X
+        ...
+    validations:
+      required: true
