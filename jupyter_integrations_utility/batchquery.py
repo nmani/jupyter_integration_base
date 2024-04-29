@@ -9,6 +9,10 @@ import operator
 from inspect import isfunction
 import pandas as pd
 from jupyter_integrations_utility.funcdoc import *
+import jupyter_integrations_utility as jiu
+from tqdm.notebook import tqdm
+from IPython import get_ipython
+ipy = get_ipython()
 
 
 load_name = "batch_query"
@@ -94,8 +98,17 @@ def write_xlsx(outputfile, dfsheets):
     print(f"XLSX Output to {outputfile} complete")
 
 
-
-def batch_list_in(batchlist, base_query, integration, instance, tmp_dict={}, batchsize=500, list_quotes='single', list_sep=', ', dedupe=True, remove_none=True, debug=False):
+def batch_list_in(batchlist,
+                  base_query,
+                  integration,
+                  instance,
+                  tmp_dict={},
+                  batchsize=500,
+                  list_quotes='single',
+                  list_sep=', ',
+                  dedupe=True,
+                  remove_none=True,
+                  debug=False):
     """ {"name": "batch_list_in",
          "desc": "Take in a query, list, integration, and instance and split the list up into batched, returning all results as one dataframe",
          "return": "A dataframe with the result of all batches combined",
@@ -129,12 +142,12 @@ def batch_list_in(batchlist, base_query, integration, instance, tmp_dict={}, bat
                     "pull_final_results": False
                }
 
-
     if tmp_dict is not None:
         vol_dict.update(tmp_dict)
 
     bTemp = False
     ret_results = vol_dict['pull_final_results']
+
     if vol_dict['table_name'] is not None:
         bTemp = True
 
@@ -142,51 +155,58 @@ def batch_list_in(batchlist, base_query, integration, instance, tmp_dict={}, bat
     ipy = get_ipython()
 
     if debug:
-        print("Running query using %s instance %s" % (integration, instance))
+        jiu.displayMD("Running query using %s instance %s" % (integration, instance))
 
     if base_query.find("~~here~~") < 0:
-        print("Warning: We typically Need to know where to put in the batched list, your query should  have '~~here~~' in it")
-        print("Example:  field in (~~here~~) --if you are doing a list of said field")
-        print("This is not a required, just a warning")
+        jiu.displayMD("Warning: We typically Need to know where to put in the batched list, your query should  have '~~here~~' in it"
+                      "Example:  field in (~~here~~) --if you are doing a list of said field"
+                      "This is not a required, just a warning")
 
     if integration in ipy.user_ns['jupyter_loaded_integrations'].keys():
         integration_var = ipy.user_ns['jupyter_loaded_integrations'][integration]
     else:
-        print("Integration: %s not loaded" % integration)
+        jiu.display_error(f"Integration: `{integration}` not loaded")
         return pd.DataFrame()
 
     if not ipy.user_ns[integration_var].instances[instance]['connected']:
-        print("%s integration instance %s is not connected, please connect" % (integration, instance))
+        jiu.display_error(f"`{integration}` integration instance `{integration}` is not connected, please connect")
         return pd.DataFrame()
 
     if dedupe:
         batchlist = list(set(batchlist))
 
     if remove_none:
-        batchlist = [x for x in batchlist if x is not None and pd.isna(x) == False]
+        batchlist = [x for x in batchlist if x is not None and pd.isna(x) is False]
 
     list_cnt = len(batchlist)
-    if bTemp:
-        print(f"Temp Table Batching - Table Name: {vol_dict['table_name']}")
+    total_loops_required = -(-list_cnt // batchsize)
 
-    print("Total Items in Batchlist: %s" % list_cnt)
+    if bTemp:
+        jiu.display_info(f"Temp Table Batching - Table Name: {vol_dict['table_name']}")
+
+    jiu.display_info(f"Total Items in Batchlist: `{list_cnt}` will require `{total_loops_required}` batches")
 
     curs = 0
-    next_run = True
+
     out_df = pd.DataFrame()
     loops = 0
 
+    progress_bar = tqdm(total=total_loops_required,
+                        desc=f"Now processing {total_loops_required} batches",
+                        bar_format="{desc} {postfix}")
 
-    full_s_time = int(time.time())
-    print(f"Starting Batch List In")
-    while next_run:
+    elapsed_time = 0
+
+    for loop in range(total_loops_required):
+        start_time = time.time()
+
         loops += 1
-        stidx = curs
-        enidx = curs + batchsize
-        if enidx > list_cnt:
-            next_run = False
-        thisbatch = batchlist[stidx:enidx]
-        curs = enidx
+
+        start_index = curs
+        end_index = curs + batchsize
+
+        thisbatch = batchlist[start_index:end_index]
+        curs = end_index
         this_len = len(thisbatch)
         if list_quotes == 'single' and list_sep == ", ":
             this_str = str(thisbatch)[1:-1]  # just due the default list separator
@@ -201,17 +221,19 @@ def batch_list_in(batchlist, base_query, integration, instance, tmp_dict={}, bat
         else:
             print("\t Error must use single or double as your list_quotes")
 
-        print(f"\t Batch: {loops} - {this_len} Items - {stidx} to {enidx}")
+        progress_bar.set_description(f"Processing batch {loop + 1}")
+        progress_bar.update(1)
+
         this_query = base_query.replace("~~here~~", this_str)
         try:
             del ipy.user_ns[results_var]
-        except:
+        except Exception:
             pass
         if debug:
             print("")
             print("Cur Query")
             print(this_query)
-        t_s_time = int(time.time())
+
         if this_len > 0:
             if bTemp:
                 if not vol_dict['created']:
@@ -222,35 +244,28 @@ def batch_list_in(batchlist, base_query, integration, instance, tmp_dict={}, bat
                     post_q = vol_dict['post_insert']
                 this_query = f"{pre_q}{this_query}{post_q}"
             ipy.run_cell_magic(integration, instance + " -d", this_query)
-            if vol_dict['created'] == False:
+            if vol_dict['created'] is False:
                 vol_dict['created'] = True
         else:
             print("Batch is a final batch and you connected perfectly with batch size - skipping due to no more items!")
-        t_q_time = int(time.time())
+
         try:
             if not bTemp:
                 these_df = ipy.user_ns[results_var]
             else:
                 these_df = pd.DataFrame()
-        except:
+        except Exception:
             these_df = pd.DataFrame()
             if this_len > 0:
                 print("Error on batch")
         out_df = pd.concat([out_df, these_df], ignore_index=True)
-        t_f_time = int(time.time())
 
-        t_t_time = t_f_time - t_s_time
-        t_qt_time = t_q_time - t_s_time
-        t_c_time = t_f_time - t_q_time
+        finish_time = time.time()
+        elapsed_time += (finish_time - start_time)
 
-        print(f"\t\t {len(these_df)} results in list batch {loops} - total: {len(out_df)}")
-        print(f"\t\t {t_t_time:,} seconds in batch (Query: {t_qt_time:,} seconds - DF Concat: {t_c_time:,} seconds)")
+        progress_bar.set_postfix({"Results": len(these_df), "Elapsed time": f"{elapsed_time:.2f}s"})
+
         these_df = None
-
-    full_e_time = int(time.time())
-    full_t_time = full_e_time - full_s_time
-    a_time = full_t_time / loops
-    print(f"Total time: {full_t_time:,} seconds (Average of {a_time:.2f} seconds over {loops} loops)")
 
     if bTemp:
         test_query = f"select count(1) as tcnt from {vol_dict['table_name']}"
@@ -258,7 +273,23 @@ def batch_list_in(batchlist, base_query, integration, instance, tmp_dict={}, bat
         cnt_df = ipy.user_ns[results_var]
         res_cnt = cnt_df['tcnt'].tolist()[0]
         if ret_results:
-            # In this case, we need pull the full table results. 
+            # In this case, we need pull the full table results.
+            print(f"Note: Total results for this table is {res_cnt} - Pulling results large results will take some time")
+            pull_query = f"select * from {vol_dict['table_name']}"
+            ipy.run_cell_magic(integration, instance + " -d", pull_query)
+            out_df = ipy.user_ns[results_var]
+        else:
+            print(f"Temp Table Loaded with {res_cnt} rows in table: {vol_dict['table_name']}")
+
+    progress_bar.close()
+
+    if bTemp:
+        test_query = f"select count(1) as tcnt from {vol_dict['table_name']}"
+        ipy.run_cell_magic(integration, instance + " -d", test_query)
+        cnt_df = ipy.user_ns[results_var]
+        res_cnt = cnt_df['tcnt'].tolist()[0]
+        if ret_results:
+            # In this case, we need pull the full table results.
             print(f"Note: Total results for this table is {res_cnt} - Pulling results large results will take some time")
             pull_query = f"select * from {vol_dict['table_name']}"
             ipy.run_cell_magic(integration, instance + " -d", pull_query)
@@ -269,7 +300,15 @@ def batch_list_in(batchlist, base_query, integration, instance, tmp_dict={}, bat
     return out_df
 
 
-def batch_by_date(base_query, integration, instance, list_items, date_batch_type, date_start, date_end, range_batchdays=30, range_splunk=False, range_datefield="asofdate", range_add_ts=False, hist_str="_hs_", hist_format="%Y%m", hist_current_str= "_ct", hist_date_clauses=[], tmp_dict={}, batchsize=500, print_only=False, debug=False):
+
+#batch_list_in(batchlist, base_query, integration, instance, tmp_dict={}, batchsize=500, list_quotes='single', list_sep=', ', dedupe=True, remove_none=True, debug=False)
+
+def batch_by_date(base_query, integration, instance, list_items,
+                  date_batch_type, date_start, date_end, batchsize=500,
+                  range_batchdays=30, range_splunk=False, range_datefield="asofdate", range_add_ts=False,
+                  hist_str="_hs_", hist_format="%Y%m", hist_current_str= "_ct", hist_date_clauses=[],
+                  list_quotes='single', list_sep=', ', dedupe=True, remove_none=True,
+                  tmp_dict={}, print_only=False, debug=False):
     """ {"name": "batch_by_date",
          "desc": "Take a query and date range and break it up in date chunks for handling long combined queries. Also uses the batch list function to lots of items.",
          "return": "Dataframe of combined results",
@@ -281,6 +320,7 @@ def batch_by_date(base_query, integration, instance, list_items, date_batch_type
                   {"name": "date_batch_type", "default": "None", "required": "True", "type": "string", "desc": "Should be 'hist' (for history tables) or 'range' (for partitioned tables)"},
                   {"name": "date_start", "default": "None", "required": "False", "type": "string or None", "desc": "Start date of the query, if not passed we use 90 days prior today"},
                   {"name": "date_end", "default": "now", "required": "False", "type": "string", "desc": "End date of the query (or now for today)"},
+                  {"name": "batchsize", "default": "500", "required": "False", "type": "integer", "desc": "Number of items in list to batch (this is done per date)"},
                   {"name": "range_batchdays", "default": "30", "required": "False", "type": "integer", "desc": "Number of days to batch if using range"},
                   {"name": "range_splunk", "default": "False", "required": "False", "type": "boolean", "desc": "Use Splunk earliest and latest, and splunk format instead of date field"},
                   {"name": "range_datefield", "default": "asofdate", "required": "False", "type": "string", "desc": "Name of datefield to replace in where clause"},
@@ -289,8 +329,11 @@ def batch_by_date(base_query, integration, instance, list_items, date_batch_type
                   {"name": "hist_format", "default": "%Y%m", "required": "False", "type": "string", "desc": "Date format for hist tables (%Y%m and %y%m supported)"},
                   {"name": "hist_current_str", "default": "_ct", "required": "False", "type": "string", "desc": "String for the current table if using hist"},
                   {"name": "hist_date_clauses", "default": "[]", "required": "False", "type": "list", "desc": "A list of 4 item lists that can be used to replace parts of the query based on the hist date - Careful"},
+                  {"name": "list_quotes", "default": "single", "required": "False", "type": "string", "desc": "Whether to use single or double quotes, or blank  on list items. Single is default best for SQLish, double may work better for Splunk types"},
+                  {"name": "list_sep", "default": ", ", "required": "False", "type": "string", "desc": "How the list gets seperated. ', ' is the default and works for SQL IN clauses. Consider ' OR ' for SPLUNK index queries"},
+                  {"name": "dedupe", "default": "True", "required": "False", "type": "boolean", "desc": "Deduplicate the list, prior to submitting"},
+                  {"name": "remove_none", "default": "True", "required": "False", "type": "boolean", "desc": "Remove null values from the list. "},
                   {"name": "tmp_dict", "default": "{}", "required": "False", "type": "dict", "desc": "Instructions for temp table, pass the table name to use temp, and pull_final_results if you want all results back"},
-                  {"name": "batchsize", "default": "500", "required": "False", "type": "integer", "desc": "Number of items in list to batch (this is done per date)"},
                   {"name": "print_only", "default": "False", "required": "False", "type": "boolean", "desc": "Only print one iteration of the query"},
                   {"name": "debug", "default": "False", "required": "False", "type": "boolean", "desc": "Print debug messages"}
                   ],
@@ -324,7 +367,7 @@ def batch_by_date(base_query, integration, instance, list_items, date_batch_type
     if vol_dict['table_name'] is not None:
         bTemp = True
 
-    # We set this back to False no matter one. We know via ret_results if this was the inital call and they want results. 
+    # We set this back to False no matter one. We know via ret_results if this was the inital call and they want results.
     vol_dict['pull_final_results'] = False
 
 
@@ -408,7 +451,7 @@ def batch_by_date(base_query, integration, instance, list_items, date_batch_type
             print_query(this_query, integration, instance)
         else:
             cur_df = pd.DataFrame()
-            cur_df = batch_list_in(list_items, this_query, integration, instance, tmp_dict=vol_dict, batchsize=batchsize, debug=debug)
+            cur_df = batch_list_in(list_items, this_query, integration, instance, tmp_dict=vol_dict, batchsize=batchsize, list_quotes=list_quotes, list_sep=list_sep, dedupe=dedupe, remove_none=remove_none, debug=debug)
             if bTemp == False:
                 if len(cur_df) > 0:
                     out_df = pd.concat([out_df, cur_df], ignore_index=True)
@@ -425,7 +468,7 @@ def batch_by_date(base_query, integration, instance, list_items, date_batch_type
         cnt_df = ipy.user_ns[results_var]
         res_cnt = cnt_df['tcnt'].tolist()[0]
         if ret_results:
-            # In this case, we need pull the full table results. 
+            # In this case, we need pull the full table results.
             print(f"Note: Total results for this table is {res_cnt} - Pulling results large results will take some time")
             pull_query = f"select * from {vol_dict['table_name']}"
             ipy.run_cell_magic(integration, instance + " -d", pull_query)
@@ -505,7 +548,7 @@ def df_expand_col(newdf, srccol, make_json=False, remove_srccol=False):
 
 
 def make_list_like_any(inlist, preany=True, postany=True):
-    """ {"name": "make_list_like_any", 
+    """ {"name": "make_list_like_any",
          "desc": "Take any list of items and add % before, after, or both(default) to the item for use in a like any or like all query",
          "return": "The list provided, but with the % added in the appropriate places",
          "examples": [],
@@ -536,10 +579,10 @@ def make_list_like_any(inlist, preany=True, postany=True):
 #
 
 def resolve_start_date(s_date):
-    """ {"name": "resolve_start_date", 
+    """ {"name": "resolve_start_date",
          "desc": "Checks the provided date, if it's None, then provide a message and provide the date 90 days prior to the current date",
-         "return": "A string representation of the current date minus 90 days in YYYY-MM-DD format", 
-         "examples": ["date_minus_90 = resolve_start_date(None)"], 
+         "return": "A string representation of the current date minus 90 days in YYYY-MM-DD format",
+         "examples": ["date_minus_90 = resolve_start_date(None)"],
          "args": [{"name": "s_date", "default": "None", "required": "True", "type": "String or None", "desc": "Either a date or None. If None, get 90 days prior to today"}
                   ],
          "integration": "na",
@@ -559,10 +602,10 @@ def resolve_start_date(s_date):
     return ret_date
 
 def handle_dates(base_query, date_col, date_start, date_end, include_and=False):
-    """ {"name": "handle_dates", 
+    """ {"name": "handle_dates",
          "desc": "Takes in a query, and replaces the string `~~dates~~` with a date start and a date end",
-         "return": "Query will dates handled", 
-         "examples": ["dated_query = handle_date(myquery, 'asofdate', '2022-01-01', '2022-05-01')"], 
+         "return": "Query will dates handled",
+         "examples": ["dated_query = handle_date(myquery, 'asofdate', '2022-01-01', '2022-05-01')"],
          "args": [{"name": "base_query", "default": "None", "required": "True", "type": "string", "desc": "Query that contains the string `~~dates~~` to be replaced"},
                   {"name": "date_col", "default": "None", "required": "True", "type": "string", "desc": "Name of the column that is used for date ranges (i.e. asofdate)"},
                   {"name": "date_start", "default": "None", "required": "True", "type": "string", "desc": "YYYY-MM-DD representation of the start date"},
